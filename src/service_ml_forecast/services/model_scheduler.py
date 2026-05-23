@@ -202,6 +202,15 @@ def _model_training_job(config: ModelConfig, data_service: OpenRemoteService) ->
     # Save the model
     provider.save_model(model)
 
+    # Evaluate the model and log metrics
+    metrics = provider.evaluate_model(model)
+    if metrics is not None:
+        logger.info(
+            f"Model evaluation for {config.id} - "
+            f"RMSE: {metrics.rmse:.4f}, MAE: {metrics.mae:.4f}, "
+            f"MAPE: {metrics.mape:.4f}, MdAPE: {metrics.mdape:.4f}, R²: {metrics.r2:.4f}"
+        )
+
     # Log the first and last datapoint datetimes of the target attribute
     target_first_datapoint_datetime = datetime.datetime.fromtimestamp(training_dataset.target.datapoints[0].x / 1000)
     target_last_datapoint_datetime = datetime.datetime.fromtimestamp(training_dataset.target.datapoints[-1].x / 1000)

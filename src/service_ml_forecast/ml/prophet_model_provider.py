@@ -91,14 +91,15 @@ class ProphetModelProvider(ModelProvider[Prophet]):
                 f"after resampling (minimum recommended: {MIN_RECOMMENDED_DATAPOINTS})."
             )
 
-        # Construct model and apply hyperparameters from the model config``
-        model = Prophet()
-        model.weekly_seasonality = self.config.weekly_seasonality
-        model.yearly_seasonality = self.config.yearly_seasonality
-        model.daily_seasonality = self.config.daily_seasonality
-        model.seasonality_mode = self.config.seasonality_mode
-        model.changepoint_prior_scale = self.config.changepoint_prior_scale
-        model.changepoint_range = self.config.changepoint_range
+        # Construct model and apply hyperparameters from the model config
+        model = Prophet(
+            weekly_seasonality=self.config.weekly_seasonality,
+            yearly_seasonality=self.config.yearly_seasonality,
+            daily_seasonality=self.config.daily_seasonality,
+            seasonality_mode=self.config.seasonality_mode,
+            changepoint_prior_scale=self.config.changepoint_prior_scale,
+            changepoint_range=self.config.changepoint_range,
+        )
 
         # Add regressors to the model if provided
         if training_dataset.regressors is not None:
