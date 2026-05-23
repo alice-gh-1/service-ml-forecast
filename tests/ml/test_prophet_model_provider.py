@@ -426,3 +426,127 @@ def test_evaluate_model_with_insufficient_data(
     metrics = model_provider.evaluate_model(model)
     # Should return None because training data is too short for meaningful CV
     assert metrics is None
+
+
+def test_regressors_affect_forecast() -> None:
+    """Prove that regressors change fitted coefficients and forecasts.
+
+    We build synthetic data where target = 10 + 2 * regressor.
+    A model trained WITH the regressor should produce different forecasts than one trained WITHOUT,
+    and the fitted regressor coefficient should be non-zero.
+    """
+    from uuid import uuid4
+
+    from service_ml_forecast.models.model_config import (
+        ProphetModelConfig,
+        RegressorAssetDatapointsFeature,
+        TargetAssetDatapointsFeature,
+    )
+
+    base_time = 1_741_193_868_000  # ms epoch
+    hour_ms = 3_600_000
+
+    # Synthetic data: 168 hours (1 week), target is exactly 10 + 2*regressor
+    # Long enough for Prophet to confidently fit the regressor coefficient
+    target_points: list[AssetDatapoint] = []
+    regressor_points: list[AssetDatapoint] = []
+    for i in range(168):
+        t = base_time + i * hour_ms
+        reg_val = float((i % 10) + 1)  # 1..10 repeating
+        target_points.append(AssetDatapoint(x=t, y=10.0 + 2.0 * reg_val))
+        regressor_points.append(AssetDatapoint(x=t, y=reg_val))
+
+    # Minimal config so Prophet is deterministic and fast
+    common_kwargs = {
+        "realm": "master",
+        "name": "test",
+        "target": TargetAssetDatapointsFeature(
+            asset_id="49ORIhkDVAlT97dYGUD9p5",
+            attribute_name="power",
+        ),
+        "forecast_interval": "PT60S",
+        "forecast_periods": 3,
+        "forecast_frequency": "1h",
+        "weekly_seasonality": False,
+        "yearly_seasonality": False,
+        "daily_seasonality": False,
+    }
+
+    config_no_reg = ProphetModelConfig(id=uuid4(), **common_kwargs)
+    config_with_reg = ProphetModelConfig(
+        id=uuid4(),
+        **common_kwargs,
+        regressors=[
+            RegressorAssetDatapointsFeature(
+                asset_id="41ORIhkDVAlT97dYGUD9n5",
+                attribute_name="windSpeed",
+            ),
+        ],
+    )
+
+    # Train model without regressor
+    provider_no_reg = ModelProviderFactory.create_provider(config_no_reg)
+    model_no_reg = provider_no_reg.train_model(
+        TrainingDataSet(
+            target=AssetFeatureDatapoints(
+                feature_name="power",
+                datapoints=target_points,
+            ),
+        ),
+    )
+    assert model_no_reg is not None
+    provider_no_reg.save_model(model_no_reg)
+
+    # Train model with regressor
+    provider_with_reg = ModelProviderFactory.create_provider(config_with_reg)
+    model_with_reg = provider_with_reg.train_model(
+        TrainingDataSet(
+            target=AssetFeatureDatapoints(
+                feature_name="power",
+                datapoints=target_points,
+            ),
+            regressors=[
+                AssetFeatureDatapoints(
+                    feature_name="windSpeed",
+                    datapoints=regressor_points,
+                ),
+            ],
+        ),
+    )
+    assert model_with_reg is not None
+    provider_with_reg.save_model(model_with_reg)
+
+    # The regressor coefficient should be non-negligible (Prophet stores it in model.params['beta'])
+    # beta is a (samples, n_regressors) array; we check the mean across MCMC samples.
+    # Note: Prophet standardises regressors internally, so the raw coefficient is not the
+    # original scale (e.g. 2.0) -- it is the coefficient for the z-scored regressor.
+    beta = model_with_reg.params["beta"]
+    assert beta is not None
+    assert beta.shape[1] == 1  # one regressor
+    mean_coeff = float(beta.mean())
+    assert abs(mean_coeff) > 0.05, f"Regressor coefficient should be non-zero, got {mean_coeff}"
+
+    # Forecast both with the same future regressor values (constant 5.0)
+    future_times = [base_time + (168 + i) * hour_ms for i in range(3)]
+    future_regressor = AssetFeatureDatapoints(
+        feature_name="windSpeed",
+        datapoints=[AssetDatapoint(x=t, y=5.0) for t in future_times],
+    )
+    forecast_dataset = ForecastDataSet(regressors=[future_regressor])
+
+    forecast_no_reg = provider_no_reg.generate_forecast()
+    forecast_with_reg = provider_with_reg.generate_forecast(forecast_dataset)
+
+    # Forecasts should differ because the regressor pulls the prediction toward 10 + 2*5 = 20
+    assert forecast_no_reg.datapoints is not None
+    assert forecast_with_reg.datapoints is not None
+
+    no_reg_values = [dp.y for dp in forecast_no_reg.datapoints]
+    with_reg_values = [dp.y for dp in forecast_with_reg.datapoints]
+
+    # The with-regressor forecast should be closer to the true value (20) than the no-regressor one
+    for v in with_reg_values:
+        assert 15.0 < v < 25.0, f"With-regressor forecast should center around 20, got {v}"
+
+    # And the two forecasts should actually be different
+    assert no_reg_values != with_reg_values, "Forecasts with and without regressor should differ"
