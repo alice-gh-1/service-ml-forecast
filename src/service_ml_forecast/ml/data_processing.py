@@ -151,7 +151,8 @@ def align_training_data(
     target_len = len(target_df)
     logger.info(f"Target data resampled to {frequency} frequency, resulting in {target_len} datapoints.")
 
-    # Resample and interpolate regressor data if they are provided
+    # Collect successfully resampled regressor dataframes alongside their metadata
+    regressor_dfs: list[pd.DataFrame] = []
     if regressors is not None:
         for regressor in regressors:
             regressor_df = resample_and_interpolate(
@@ -164,6 +165,7 @@ def align_training_data(
                 regressor_len = len(regressor_df)
                 logger.info(f"Regressor '{regressor.feature_name}' resampled, resulting in {regressor_len} datapoints.")
                 dataframes.append(regressor_df)
+                regressor_dfs.append(regressor_df)
             else:
                 logger.warning(
                     f"Regressor '{regressor.feature_name}' data is empty or None after resampling. It will be excluded."
@@ -180,12 +182,9 @@ def align_training_data(
     # Start with target data
     result = target_df[(target_df[timestamp_col] >= min_date) & (target_df[timestamp_col] <= max_date)].copy()
 
-    # Merge the regressors if they are provided
-    if regressors is not None:
-        for i, _regressor in enumerate(regressors):
-            regressor_df = dataframes[i + 1]  # note +1 because target_df is first component
-            if regressor_df is not None and not regressor_df.empty:
-                result = result.merge(regressor_df, on=timestamp_col, how="left")
+    # Merge the regressors that were successfully resampled
+    for regressor_df in regressor_dfs:
+        result = result.merge(regressor_df, on=timestamp_col, how="left")
 
     # Update the index and reindex to the full index
     result = result.set_index(timestamp_col)

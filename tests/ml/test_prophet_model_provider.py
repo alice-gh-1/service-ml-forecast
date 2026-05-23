@@ -374,3 +374,55 @@ def test_forecast_data_quality(
         for diff in time_diffs:
             # Allow some tolerance for rounding
             assert abs(diff - expected_interval) < expected_interval * 0.1
+
+
+def test_train_with_empty_regressors_list(
+    prophet_basic_config: ProphetModelConfig,
+    windspeed_mock_datapoints: list[AssetDatapoint],
+) -> None:
+    """Training with an explicit empty regressors list should behave the same as no regressors."""
+    model_provider = ModelProviderFactory.create_provider(prophet_basic_config)
+
+    model = model_provider.train_model(
+        TrainingDataSet(
+            target=AssetFeatureDatapoints(
+                feature_name=prophet_basic_config.target.attribute_name,
+                datapoints=windspeed_mock_datapoints,
+            ),
+            regressors=[],
+        ),
+    )
+    assert model is not None
+    model_provider.save_model(model)
+
+    forecast = model_provider.generate_forecast()
+    assert forecast is not None
+    assert len(forecast.datapoints) > 0
+
+
+def test_evaluate_model_with_insufficient_data(
+    prophet_basic_config: ProphetModelConfig,
+) -> None:
+    """evaluate_model should return None when training data is too short for cross-validation."""
+    model_provider = ModelProviderFactory.create_provider(prophet_basic_config)
+
+    # Small dataset: 3 points is enough to train but not enough for CV
+    small_dataset = [
+        AssetDatapoint(x=1_741_193_868_000, y=1.0),
+        AssetDatapoint(x=1_741_197_468_000, y=2.0),
+        AssetDatapoint(x=1_741_201_068_000, y=3.0),
+    ]
+
+    model = model_provider.train_model(
+        TrainingDataSet(
+            target=AssetFeatureDatapoints(
+                feature_name=prophet_basic_config.target.attribute_name,
+                datapoints=small_dataset,
+            ),
+        ),
+    )
+    assert model is not None
+
+    metrics = model_provider.evaluate_model(model)
+    # Should return None because training data is too short for meaningful CV
+    assert metrics is None
