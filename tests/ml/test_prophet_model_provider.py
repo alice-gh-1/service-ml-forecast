@@ -446,36 +446,48 @@ def test_regressors_affect_forecast() -> None:
     base_time = 1_741_193_868_000  # ms epoch
     hour_ms = 3_600_000
 
-    # Synthetic data: 168 hours (1 week), target is exactly 10 + 2*regressor
+    synthetic_base = 10.0
+    synthetic_coeff = 2.0
+    reg_range = 10  # regressor cycles 1..10
+
+    # Synthetic data: 168 hours (1 week), target is exactly base + coeff*regressor
     # Long enough for Prophet to confidently fit the regressor coefficient
     target_points: list[AssetDatapoint] = []
     regressor_points: list[AssetDatapoint] = []
     for i in range(168):
         t = base_time + i * hour_ms
-        reg_val = float((i % 10) + 1)  # 1..10 repeating
-        target_points.append(AssetDatapoint(x=t, y=10.0 + 2.0 * reg_val))
+        reg_val = float((i % reg_range) + 1)
+        target_points.append(AssetDatapoint(x=t, y=synthetic_base + synthetic_coeff * reg_val))
         regressor_points.append(AssetDatapoint(x=t, y=reg_val))
 
-    # Minimal config so Prophet is deterministic and fast
-    common_kwargs = {
-        "realm": "master",
-        "name": "test",
-        "target": TargetAssetDatapointsFeature(
-            asset_id="49ORIhkDVAlT97dYGUD9p5",
-            attribute_name="power",
-        ),
-        "forecast_interval": "PT60S",
-        "forecast_periods": 3,
-        "forecast_frequency": "1h",
-        "weekly_seasonality": False,
-        "yearly_seasonality": False,
-        "daily_seasonality": False,
-    }
+    target_feature = TargetAssetDatapointsFeature(
+        asset_id="49ORIhkDVAlT97dYGUD9p5",
+        attribute_name="power",
+    )
 
-    config_no_reg = ProphetModelConfig(id=uuid4(), **common_kwargs)
+    config_no_reg = ProphetModelConfig(
+        id=uuid4(),
+        realm="master",
+        name="test",
+        target=target_feature,
+        forecast_interval="PT60S",
+        forecast_periods=3,
+        forecast_frequency="1h",
+        weekly_seasonality=False,
+        yearly_seasonality=False,
+        daily_seasonality=False,
+    )
     config_with_reg = ProphetModelConfig(
         id=uuid4(),
-        **common_kwargs,
+        realm="master",
+        name="test",
+        target=target_feature,
+        forecast_interval="PT60S",
+        forecast_periods=3,
+        forecast_frequency="1h",
+        weekly_seasonality=False,
+        yearly_seasonality=False,
+        daily_seasonality=False,
         regressors=[
             RegressorAssetDatapointsFeature(
                 asset_id="41ORIhkDVAlT97dYGUD9n5",
@@ -524,29 +536,37 @@ def test_regressors_affect_forecast() -> None:
     assert beta is not None
     assert beta.shape[1] == 1  # one regressor
     mean_coeff = float(beta.mean())
-    assert abs(mean_coeff) > 0.05, f"Regressor coefficient should be non-zero, got {mean_coeff}"
+    min_regressor_coeff = 0.05
+    assert abs(mean_coeff) > min_regressor_coeff, (
+        f"Regressor coefficient should be non-zero, got {mean_coeff}"
+    )
 
     # Forecast both with the same future regressor values (constant 5.0)
     future_times = [base_time + (168 + i) * hour_ms for i in range(3)]
+    future_reg_value = 5.0
     future_regressor = AssetFeatureDatapoints(
         feature_name="windSpeed",
-        datapoints=[AssetDatapoint(x=t, y=5.0) for t in future_times],
+        datapoints=[AssetDatapoint(x=t, y=future_reg_value) for t in future_times],
     )
     forecast_dataset = ForecastDataSet(regressors=[future_regressor])
 
     forecast_no_reg = provider_no_reg.generate_forecast()
     forecast_with_reg = provider_with_reg.generate_forecast(forecast_dataset)
 
-    # Forecasts should differ because the regressor pulls the prediction toward 10 + 2*5 = 20
+    # Forecasts should differ because the regressor pulls the prediction toward base + coeff*value
     assert forecast_no_reg.datapoints is not None
     assert forecast_with_reg.datapoints is not None
 
     no_reg_values = [dp.y for dp in forecast_no_reg.datapoints]
     with_reg_values = [dp.y for dp in forecast_with_reg.datapoints]
 
-    # The with-regressor forecast should be closer to the true value (20) than the no-regressor one
+    expected_forecast = synthetic_base + synthetic_coeff * future_reg_value
+    forecast_tolerance = 5.0
+    # The with-regressor forecast should be close to the expected value
     for v in with_reg_values:
-        assert 15.0 < v < 25.0, f"With-regressor forecast should center around 20, got {v}"
+        assert expected_forecast - forecast_tolerance < v < expected_forecast + forecast_tolerance, (
+            f"With-regressor forecast should center around {expected_forecast}, got {v}"
+        )
 
     # And the two forecasts should actually be different
     assert no_reg_values != with_reg_values, "Forecasts with and without regressor should differ"

@@ -38,8 +38,8 @@ def test_resample_single_unique_timestamp() -> None:
     result = resample_and_interpolate(datapoints, frequency="1h", time_col_name="timestamp", value_col_name="value")
     assert result is not None
     assert len(result) == 1
-    # mean of 1, 2, 3 == 2.0
-    assert result["value"].iloc[0] == 2.0
+    expected_mean = 2.0  # mean of 1, 2, 3
+    assert result["value"].iloc[0] == expected_mean
 
 
 def test_resample_unsorted_data() -> None:
